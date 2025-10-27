@@ -333,7 +333,10 @@ try:
                     elif percentage_change < 0:
                         delta_text = f"{abs(percentage_change):.2f}% decrease"
                 elif total_current_usage > 0:
-                    delta_text = "New usage" # Handle case where previous usage was 0
+                    delta_text = "Increase"  # Handle case where previous usage was 0
+
+                if total_current_usage == 0 and total_previous_usage > 0:
+                    delta_text = "100% decrease"
 
                 st.metric(
                     label=label_text,
