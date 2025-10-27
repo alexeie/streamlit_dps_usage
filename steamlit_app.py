@@ -203,12 +203,12 @@ try:
         st.header("2. Filter Data Products")
         filter_text = st.text_input(
             "Filter by object name (supports regex, e.g., `.*USAGE.*`):", 
-            value=".*"
+            value="."
         )
 
         try:
-            # Filter on the FULL_OBJECT_NAME which contains the full path
-            filtered_data = full_data[full_data['FULL_OBJECT_NAME'].str.contains(filter_text, regex=True, case=False, na=False)]
+            # Filter on the TABLE_NAME
+            filtered_data = full_data[full_data['TABLE_NAME'].str.contains(filter_text, regex=True, case=False, na=False)]
         except Exception as e:
             st.error(f"Invalid Regex: {e}. Please correct the filter.")
             filtered_data = full_data
@@ -216,12 +216,16 @@ try:
         if filtered_data.empty and not full_data.empty:
             st.info("Your filter returned no results.")
 
+        # Get the selection state safely for use in the dashboard components
+        selection_state = st.session_state.get("view_selection", {})
+        selected_rows = selection_state.get("selection", {}).get("rows", [])
+
         # --- 3. Usage Graph (with Plotly) ---
         st.header("3. Usage Overview")
         col1, col2 = st.columns(2)
 
         with col1:
-            st.subheader("Top 10 Usage")
+            st.subheader("Top 12 Usage")
             if not selected_days:
                 st.info("Please select a time window above to view the usage graph.")
             elif filtered_data.empty:
@@ -230,7 +234,7 @@ try:
                 value_vars = [f"QUERIES_LAST_{day}_DAYS" for day in selected_days]
                 sort_col = f"QUERIES_LAST_{max(selected_days)}_DAYS"
                 
-                graph_data = filtered_data.sort_values(by=sort_col, ascending=False).head(10)
+                graph_data = filtered_data.sort_values(by=sort_col, ascending=False).head(12)
                 
                 if graph_data[sort_col].sum() == 0:
                     st.info("No query usage to display in the graph for the selected filter.")
@@ -248,10 +252,10 @@ try:
 
                     if len(selected_days) == 1:
                         facet_col_arg = None
-                        title_text = f'Top 10 Used Data Products (by {selected_days[0]}-day usage)'
+                        title_text = f'Top 12 Used Data Products (by {selected_days[0]}-day usage)'
                     else:
                         facet_col_arg = "Time Period"
-                        title_text = 'Top 10 Used Data Products by Time Period'
+                        title_text = 'Top 12 Used Data Products by Time Period'
 
                     # Create the bar chart
                     fig = px.bar(
@@ -298,56 +302,44 @@ try:
                     st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            st.subheader("Usage Comparison")
+            st.subheader("Usage Change")
             if not selected_days:
-                st.info("Please select a time window above to view the usage graph.")
+                st.info("Please select a time window to view usage change.")
             elif filtered_data.empty:
-                st.info("No data to display in graph.")
+                st.info("No data to display.")
             else:
                 days = selected_days[0]
                 current_period_col = f"QUERIES_LAST_{days}_DAYS"
                 previous_period_col = f"QUERIES_PREVIOUS_{days}_DAYS"
 
-                # Calculate the total usage for the current and previous periods
-                total_current_usage = filtered_data[current_period_col].sum()
-                total_previous_usage = filtered_data[previous_period_col].sum()
+                # Determine which data to use (selected row or all data)
+                if selected_rows:
+                    selected_row_data = filtered_data.iloc[selected_rows[0]]
+                    total_current_usage = selected_row_data[current_period_col]
+                    total_previous_usage = selected_row_data[previous_period_col]
+                    label_text = f"Change for {selected_row_data['TABLE_NAME']}"
+                else:
+                    total_current_usage = filtered_data[current_period_col].sum()
+                    total_previous_usage = filtered_data[previous_period_col].sum()
+                    label_text = f"Change from Previous {days} Days"
 
-                # Calculate the percentage change
+
+                # Calculate and display the percentage change
+                delta_text = "No change"
                 if total_previous_usage > 0:
                     percentage_change = ((total_current_usage - total_previous_usage) / total_previous_usage) * 100
-                else:
-                    percentage_change = float('inf') if total_current_usage > 0 else 0
+                    if percentage_change > 0:
+                        delta_text = f"{percentage_change:.2f}% increase"
+                    elif percentage_change < 0:
+                        delta_text = f"{abs(percentage_change):.2f}% decrease"
+                elif total_current_usage > 0:
+                    delta_text = "New usage" # Handle case where previous usage was 0
 
-                # Display the percentage change
-                if percentage_change > 0:
-                    st.metric(label="Usage Change", value=f"{total_current_usage} queries", delta=f"{percentage_change:.2f}% (increase)")
-                elif percentage_change < 0:
-                    st.metric(label="Usage Change", value=f"{total_current_usage} queries", delta=f"{percentage_change:.2f}% (decrease)")
-                else:
-                    st.metric(label="Usage Change", value=f"{total_current_usage} queries", delta="No change")
-
-                # Create the comparison graph
-                comparison_data = filtered_data.nlargest(10, current_period_col)
-                comparison_data = comparison_data.melt(
-                    id_vars=['TABLE_NAME'],
-                    value_vars=[current_period_col, previous_period_col],
-                    var_name='Period',
-                    value_name='Query Count'
+                st.metric(
+                    label=label_text,
+                    value=f"{int(total_current_usage)} queries",
+                    delta=delta_text,
                 )
-                comparison_data['Period'] = comparison_data['Period'].map({
-                    current_period_col: f"Last {days} Days",
-                    previous_period_col: f"Previous {days} Days"
-                })
-
-                fig_comp = px.bar(
-                    comparison_data,
-                    x="TABLE_NAME",
-                    y="Query Count",
-                    color="Period",
-                    barmode="group",
-                    title="Top 10 Usage Comparison"
-                )
-                st.plotly_chart(fig_comp, use_container_width=True)
 
         # --- 4. Sortable Table (MODIFIED for selection) ---
         st.header("4. All Data Products (Select a row to see users)")
@@ -378,10 +370,6 @@ try:
 
         # --- 5. NEW: User Details Table (CORRECTED) ---
         
-        # Get the selection state safely
-        selection_state = st.session_state.get("view_selection", {})
-        selected_rows = selection_state.get("selection", {}).get("rows", [])
-
         # Check if a row has been selected
         if selected_rows:
             # Get the index of the selected row
