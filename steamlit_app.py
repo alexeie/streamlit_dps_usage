@@ -69,6 +69,13 @@ def load_usage_data(selected_days_tuple, schema_choice):
                 ELSE NULL 
             END) AS QUERIES_LAST_{days}_DAYS
             """)
+            # Add expression for the previous week
+            usage_select_expressions.append(f"""
+            COUNT(DISTINCT CASE
+                WHEN QUERY_START_TIME >= DATEADD(day, -{days}*2, CURRENT_TIMESTAMP()) AND QUERY_START_TIME < DATEADD(day, -{days}, CURRENT_TIMESTAMP()) THEN QUERY_ID
+                ELSE NULL
+            END) AS QUERIES_PREVIOUS_{days}_DAYS
+            """)
         usage_select_clause = ",\n".join(usage_select_expressions)
         
         usage_counts_cte = f"""
@@ -86,6 +93,9 @@ def load_usage_data(selected_days_tuple, schema_choice):
         for days in selected_days:
             final_select_expressions.append(f"""
             COALESCE(u.QUERIES_LAST_{days}_DAYS, 0) AS QUERIES_LAST_{days}_DAYS
+            """)
+            final_select_expressions.append(f"""
+            COALESCE(u.QUERIES_PREVIOUS_{days}_DAYS, 0) AS QUERIES_PREVIOUS_{days}_DAYS
             """)
         
         final_select_clause = ",\n" + ",\n".join(final_select_expressions) if final_select_expressions else ""
@@ -169,19 +179,18 @@ with col1:
     )
 
 with col2:
-    st.write("**Select Time Windows**")
-    cols_days = st.columns(4)
-    selected_days = []
-    if cols_days[0].checkbox("Last 7 Days"):
-        selected_days.append(7)
-    if cols_days[1].checkbox("Last 14 Days"):
-        selected_days.append(14)
-    if cols_days[2].checkbox("Last 30 Days"):
-        selected_days.append(30)
-    if cols_days[3].checkbox("Last 90 Days", value=True): # Default to 90 days
-        selected_days.append(90)
-
-selected_days.sort()
+    time_window_options = {
+        "Last 7 Days": 7,
+        "Last 14 Days": 14,
+        "Last 30 Days": 30,
+        "Last 90 Days": 90,
+    }
+    selected_time_window = st.radio(
+        "**Select Time Window**",
+        options=time_window_options.keys(),
+        index=3  # Default to "Last 90 Days"
+    )
+    selected_days = [time_window_options[selected_time_window]]
 
 try:
     # Load the data, passing both filter options to the cache
@@ -208,82 +217,137 @@ try:
             st.info("Your filter returned no results.")
 
         # --- 3. Usage Graph (with Plotly) ---
-        st.header("3. Usage Overview (Top 25)")
-        
-        if not selected_days:
-            st.info("Please select a time window above to view the usage graph.")
-        elif filtered_data.empty:
-            st.info("No data to display in graph.")
-        else:
-            value_vars = [f"QUERIES_LAST_{day}_DAYS" for day in selected_days]
-            sort_col = f"QUERIES_LAST_{max(selected_days)}_DAYS"
-            
-            graph_data = filtered_data.sort_values(by=sort_col, ascending=False).head(25)
-            
-            if graph_data[sort_col].sum() == 0:
-                st.info("No query usage to display in the graph for the selected filter.")
+        st.header("3. Usage Overview")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("Top 10 Usage")
+            if not selected_days:
+                st.info("Please select a time window above to view the usage graph.")
+            elif filtered_data.empty:
+                st.info("No data to display in graph.")
             else:
-                # "Melt" the dataframe
-                melted_data = graph_data.melt(
-                    id_vars=['FULL_OBJECT_NAME', 'TABLE_NAME', 'SCHEMA_NAME'], 
-                    value_vars=value_vars,
-                    var_name='Time Period',
-                    value_name='Query Count'
-                )
+                value_vars = [f"QUERIES_LAST_{day}_DAYS" for day in selected_days]
+                sort_col = f"QUERIES_LAST_{max(selected_days)}_DAYS"
                 
-                day_map = {f"QUERIES_LAST_{day}_DAYS": f"Last {day} Days" for day in selected_days}
-                melted_data['Time Period'] = melted_data['Time Period'].map(day_map)
+                graph_data = filtered_data.sort_values(by=sort_col, ascending=False).head(10)
                 
-                if len(selected_days) == 1:
-                    facet_col_arg = None
-                    title_text = f'Top 25 Used Data Products (by {selected_days[0]}-day usage)'
+                if graph_data[sort_col].sum() == 0:
+                    st.info("No query usage to display in the graph for the selected filter.")
                 else:
-                    facet_col_arg = "Time Period"
-                    title_text = 'Top 25 Used Data Products by Time Period'
-
-                # Create the bar chart
-                fig = px.bar(
-                    melted_data,
-                    x="TABLE_NAME",           # View names on X-axis
-                    y="Query Count",
-                    color="SCHEMA_NAME",      # Color code by schema
-                    facet_col=facet_col_arg,  # Facet by time period
-                    barmode="group",
-                    hover_data={
-                        "FULL_OBJECT_NAME": True,
-                        "SCHEMA_NAME": True,
-                        "Time Period": True,
-                        "Query Count": True
-                    }
-                )
-
-                # --- Customize Layout ---
-                show_legend = True if schema_choice == "Both" else False
-                
-                fig.update_layout(
-                    title=title_text,
-                    showlegend=show_legend,
-                    yaxis_title="Number of Queries",
-                    legend_title_text='Schema',
-                    xaxis_title=None
-                )
-                
-                fig.update_xaxes(
-                    tickangle=25,
-                    tickfont=dict(size=10)
-                )
-                
-                fig.update_yaxes(title_text="")
-                
-                if facet_col_arg:
-                    fig.for_each_annotation(
-                        lambda a: a.update(
-                            text=a.text.split("=")[-1],
-                            textangle=0
-                        )
+                    # "Melt" the dataframe
+                    melted_data = graph_data.melt(
+                        id_vars=['FULL_OBJECT_NAME', 'TABLE_NAME', 'SCHEMA_NAME'],
+                        value_vars=value_vars,
+                        var_name='Time Period',
+                        value_name='Query Count'
                     )
 
-                st.plotly_chart(fig, use_container_width=True)
+                    day_map = {f"QUERIES_LAST_{day}_DAYS": f"Last {day} Days" for day in selected_days}
+                    melted_data['Time Period'] = melted_data['Time Period'].map(day_map)
+
+                    if len(selected_days) == 1:
+                        facet_col_arg = None
+                        title_text = f'Top 10 Used Data Products (by {selected_days[0]}-day usage)'
+                    else:
+                        facet_col_arg = "Time Period"
+                        title_text = 'Top 10 Used Data Products by Time Period'
+
+                    # Create the bar chart
+                    fig = px.bar(
+                        melted_data,
+                        x="TABLE_NAME",           # View names on X-axis
+                        y="Query Count",
+                        color="SCHEMA_NAME",      # Color code by schema
+                        facet_col=facet_col_arg,  # Facet by time period
+                        barmode="group",
+                        hover_data={
+                            "FULL_OBJECT_NAME": True,
+                            "SCHEMA_NAME": True,
+                            "Time Period": True,
+                            "Query Count": True
+                        }
+                    )
+
+                    # --- Customize Layout ---
+                    show_legend = True if schema_choice == "Both" else False
+
+                    fig.update_layout(
+                        title=title_text,
+                        showlegend=show_legend,
+                        yaxis_title="Number of Queries",
+                        legend_title_text='Schema',
+                        xaxis_title=None
+                    )
+
+                    fig.update_xaxes(
+                        tickangle=25,
+                        tickfont=dict(size=10)
+                    )
+
+                    fig.update_yaxes(title_text="")
+
+                    if facet_col_arg:
+                        fig.for_each_annotation(
+                            lambda a: a.update(
+                                text=a.text.split("=")[-1],
+                                textangle=0
+                            )
+                        )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            st.subheader("Usage Comparison")
+            if not selected_days:
+                st.info("Please select a time window above to view the usage graph.")
+            elif filtered_data.empty:
+                st.info("No data to display in graph.")
+            else:
+                days = selected_days[0]
+                current_period_col = f"QUERIES_LAST_{days}_DAYS"
+                previous_period_col = f"QUERIES_PREVIOUS_{days}_DAYS"
+
+                # Calculate the total usage for the current and previous periods
+                total_current_usage = filtered_data[current_period_col].sum()
+                total_previous_usage = filtered_data[previous_period_col].sum()
+
+                # Calculate the percentage change
+                if total_previous_usage > 0:
+                    percentage_change = ((total_current_usage - total_previous_usage) / total_previous_usage) * 100
+                else:
+                    percentage_change = float('inf') if total_current_usage > 0 else 0
+
+                # Display the percentage change
+                if percentage_change > 0:
+                    st.metric(label="Usage Change", value=f"{total_current_usage} queries", delta=f"{percentage_change:.2f}% (increase)")
+                elif percentage_change < 0:
+                    st.metric(label="Usage Change", value=f"{total_current_usage} queries", delta=f"{percentage_change:.2f}% (decrease)")
+                else:
+                    st.metric(label="Usage Change", value=f"{total_current_usage} queries", delta="No change")
+
+                # Create the comparison graph
+                comparison_data = filtered_data.nlargest(10, current_period_col)
+                comparison_data = comparison_data.melt(
+                    id_vars=['TABLE_NAME'],
+                    value_vars=[current_period_col, previous_period_col],
+                    var_name='Period',
+                    value_name='Query Count'
+                )
+                comparison_data['Period'] = comparison_data['Period'].map({
+                    current_period_col: f"Last {days} Days",
+                    previous_period_col: f"Previous {days} Days"
+                })
+
+                fig_comp = px.bar(
+                    comparison_data,
+                    x="TABLE_NAME",
+                    y="Query Count",
+                    color="Period",
+                    barmode="group",
+                    title="Top 10 Usage Comparison"
+                )
+                st.plotly_chart(fig_comp, use_container_width=True)
 
         # --- 4. Sortable Table (MODIFIED for selection) ---
         st.header("4. All Data Products (Select a row to see users)")
