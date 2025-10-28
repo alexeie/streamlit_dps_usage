@@ -50,9 +50,14 @@ def render_data_filter(full_data):
         st.error(f"Invalid Regex: {e}. Please correct the filter.")
         return full_data
 
+def render_multi_version_filter():
+    """Renders the checkbox for filtering multi-version data products."""
+    st.header("3. Usage Overview")
+    show_multi_version = st.checkbox("Show only data products with multiple versions")
+    return show_multi_version
+
 def render_overview(filtered_data, selected_days, schema_choice):
     """Renders the 'Usage Overview' section including the graph and metric."""
-    st.header("3. Usage Overview")
     col1, col2 = st.columns(2)
     with col1:
         render_usage_graph(filtered_data, selected_days, schema_choice)
